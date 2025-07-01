@@ -51,7 +51,7 @@ class TrainDiffusionTransformerHybridWorkspaceAdaLN(BaseWorkspace):
             hydra.utils.instantiate(cfg.policy)
         )
 
-        self.ema_model: DiffusionTransformerHybridImagePolicy = None
+        self.ema_model: DiffusionTransformerHybridImagePolicyAdaLN = None
         if cfg.training.use_ema:
             self.ema_model = copy.deepcopy(self.model)
 
