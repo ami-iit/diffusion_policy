@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class TransformerForDiffusionAdaLN(ModuleAttrMixin):
+
     def __init__(
         self,
         input_dim: int,
@@ -28,7 +29,7 @@ class TransformerForDiffusionAdaLN(ModuleAttrMixin):
         p_drop_attn: float = 0.1,
         causal_attn: bool = False,
         time_as_cond: bool = True,
-        obs_as_cond: bool = False,
+        obs_as_cond: bool = True,
         n_cond_layers: int = 0,
     ) -> None:
         super().__init__()
@@ -247,7 +248,7 @@ class TransformerForDiffusionAdaLN(ModuleAttrMixin):
         self,
         sample: torch.Tensor,
         timestep: Union[torch.Tensor, float, int],
-        cond: Optional[torch.Tensor] = None,
+        cond: torch.Tensor = None,
         **kwargs,
     ):
         """
@@ -276,18 +277,6 @@ class TransformerForDiffusionAdaLN(ModuleAttrMixin):
         input_emb = self.input_emb(sample)
 
         # encoder
-        # print(f"{cond =}")
-        # cond_embeddings = self.cond_obs_emb(cond)  # emb con una lin da cond_dim a n_emb
-        # # (B,To,n_emb) #To = obs time
-
-        # tc = cond_embeddings.shape[1]  # To+1 se obs_as_cond, otherwise 1
-        # position_embeddings = self.cond_pos_emb[
-        #     :, :tc, :
-        # ]  # each position maps to a (learnable) vector #it was (1, T_cond, n_emb), I only take the first 1 | To+1 depending in obs_as_cond
-        # print(f"{cond_embeddings =}")
-        # print(f"{position_embeddings =}")
-        # x = self.drop(cond_embeddings + position_embeddings)
-        # print(x.shape)
         cond_embeddings = time_emb
         cond_obs_emb = self.cond_obs_emb(cond)
         # (B,To,n_emb)

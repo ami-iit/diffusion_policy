@@ -11,7 +11,6 @@ from diffusion_policy.policy.base_image_policy import BaseImagePolicy
 from diffusion_policy.model.diffusion.transformer_for_diffusion_adaLN import (
     TransformerForDiffusionAdaLN,
 )
-from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 from diffusion_policy.common.robomimic_config_util import get_robomimic_config
 from robomimic.algo import algo_factory
 from robomimic.algo.algo import PolicyAlgo
@@ -156,13 +155,6 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         self.obs_encoder = obs_encoder
         self.model = model
         self.noise_scheduler = noise_scheduler
-        self.mask_generator = LowdimMaskGenerator(
-            action_dim=action_dim,
-            obs_dim=0 if (obs_as_cond) else obs_feature_dim,
-            max_n_obs_steps=n_obs_steps,
-            fix_obs_steps=True,
-            action_visible=False,
-        )
         self.normalizer = LinearNormalizer()
         self.horizon = horizon
         self.obs_feature_dim = obs_feature_dim
@@ -181,7 +173,6 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
     def conditional_sample(
         self,
         condition_data,
-        condition_mask,
         cond=None,
         generator=None,
         # keyword arguments to scheduler.step
@@ -201,19 +192,14 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         scheduler.set_timesteps(self.num_inference_steps)
 
         for t in scheduler.timesteps:
-            # 1. apply conditioning
-            trajectory[condition_mask] = condition_data[condition_mask]
 
-            # 2. predict model output
+            # 1. predict model output
             model_output = model(trajectory, t, cond)
 
-            # 3. compute previous image: x_t -> x_t-1
+            # 2. compute previous step: x_t -> x_t-1
             trajectory = scheduler.step(
                 model_output, t, trajectory, generator=generator, **kwargs
             ).prev_sample
-
-        # finally make sure conditioning is enforced
-        trajectory[condition_mask] = condition_data[condition_mask]
 
         return trajectory
 
@@ -224,7 +210,7 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         obs_dict: must include "obs" key
         result: must include "action" key
         """
-        assert "past_action" not in obs_dict  # not implemented yet
+
         # normalize input
         nobs = self.normalizer.normalize(obs_dict)
         value = next(iter(nobs.values()))
@@ -238,40 +224,19 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         device = self.device
         dtype = self.dtype
 
-        # handle different ways of passing observation
         cond = None
         cond_data = None
-        cond_mask = None
-        if self.obs_as_cond:
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:])
-            )
-            nobs_features = self.obs_encoder(this_nobs)
-            # reshape back to B, To, Do
-            cond = nobs_features.reshape(B, To, -1)
-            shape = (B, T, Da)
-            if self.pred_action_steps_only:
-                shape = (B, self.n_action_steps, Da)
-            cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
-            cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
-        else:
-            # condition through impainting
-            this_nobs = dict_apply(
-                nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:])
-            )
-            nobs_features = self.obs_encoder(this_nobs)
-            # reshape back to B, To, Do
-            nobs_features = nobs_features.reshape(B, To, -1)
-            shape = (B, T, Da + Do)
-            cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
-            cond_mask = torch.zeros_like(cond_data, dtype=torch.bool)
-            cond_data[:, :To, Da:] = nobs_features
-            cond_mask[:, :To, Da:] = True
+        this_nobs = dict_apply(nobs, lambda x: x[:, :To, ...].reshape(-1, *x.shape[2:]))
+        nobs_features = self.obs_encoder(this_nobs)
+        # reshape back to B, To, Do
+        cond = nobs_features.reshape(B, To, -1)
+        shape = (B, T, Da)
+        if self.pred_action_steps_only:
+            shape = (B, self.n_action_steps, Da)
+        cond_data = torch.zeros(size=shape, device=device, dtype=dtype)
 
         # run sampling
-        nsample = self.conditional_sample(
-            cond_data, cond_mask, cond=cond, **self.kwargs
-        )
+        nsample = self.conditional_sample(cond_data, cond=cond, **self.kwargs)
 
         # unnormalize prediction
         naction_pred = nsample[..., :Da]
@@ -343,12 +308,6 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
             nobs_features = nobs_features.reshape(batch_size, horizon, -1)
             trajectory = torch.cat([nactions, nobs_features], dim=-1).detach()
 
-        # generate impainting mask
-        if self.pred_action_steps_only:
-            condition_mask = torch.zeros_like(trajectory, dtype=torch.bool)
-        else:
-            condition_mask = self.mask_generator(trajectory.shape)
-
         # Sample noise that we'll add to the images
         noise = torch.randn(trajectory.shape, device=trajectory.device)
         bsz = trajectory.shape[0]
@@ -363,12 +322,6 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         # (this is the forward diffusion process)
         noisy_trajectory = self.noise_scheduler.add_noise(trajectory, noise, timesteps)
 
-        # compute loss mask
-        loss_mask = ~condition_mask
-
-        # apply conditioning
-        noisy_trajectory[condition_mask] = trajectory[condition_mask]
-
         # Predict the noise residual
 
         pred = self.model(noisy_trajectory, timesteps, cond)
@@ -381,7 +334,6 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         else:
             raise ValueError(f"Unsupported prediction type {pred_type}")
         loss = F.mse_loss(pred, target, reduction="none")
-        loss = loss * loss_mask.type(loss.dtype)
         loss = reduce(loss, "b ... -> b (...)", "mean")
         loss = loss.mean()
         return loss
