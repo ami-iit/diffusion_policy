@@ -21,6 +21,7 @@ from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
 
 
 class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
+
     def __init__(
         self,
         shape_meta: dict,
@@ -44,7 +45,7 @@ class DiffusionTransformerHybridImagePolicyAdaLN(BaseImagePolicy):
         causal_attn=True,
         time_as_cond=True,
         obs_as_cond=True,
-        pred_action_steps_only=False,
+        pred_action_steps_only=True,
         # parameters passed to step
         **kwargs,
     ):
