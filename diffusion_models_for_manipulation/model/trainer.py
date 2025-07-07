@@ -1,6 +1,6 @@
 import torch
 from abc import ABC, abstractmethod
-from src.paths.prob_paths import ProbPath
+from diffusion_models_for_manipulation.paths.prob_paths import ProbPath
 
 
 class Trainer(ABC):

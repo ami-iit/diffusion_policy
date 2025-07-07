@@ -7,7 +7,7 @@ class ProbPath(ABC):
         self.dim = dim
 
     @abstractmethod
-    def sample_p_simple(self, batch_size) -> torch.tensor:
+    def sample_p_simple(self, batch_size=None) -> torch.tensor:
         """
         returns torch.tensor(batch_size x self.dim) sampled from p_simple
         """

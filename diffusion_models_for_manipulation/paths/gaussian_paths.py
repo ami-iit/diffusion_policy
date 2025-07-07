@@ -1,6 +1,6 @@
 import torch
 from abc import ABC, abstractmethod
-from src.paths.prob_paths import ProbPath
+from diffusion_models_for_manipulation.paths.prob_paths import ProbPath
 
 
 class FunctionWithDerivative(ABC):
@@ -48,29 +48,51 @@ class GaussianConditionalProbPath(ProbPath):
         self.alpha = alpha
         self.beta = beta
 
-    def sample_p_simple(self, batch_size):
-        return torch.randn((batch_size, self.dim))
+    def sample_p_simple(self, batch_size=None):
+        if batch_size is None:
+            return torch.randn(self.dim)
+        else:
+            return torch.randn((batch_size, self.dim[0], self.dim[1]))
 
     def sample_conditional(self, t: torch.tensor, z: torch.tensor):
-        return self.alpha(t) * z + self.beta(t) * torch.randn_like(z)
+        return torch.einsum("ij,ikl->ikl", (self.alpha(t), z)) + torch.einsum(
+            "ij,ikl->ikl", (self.beta(t), torch.randn_like(z))
+        )
 
     def conditional_vector_field(self, x, z, t):
         alpha_t = self.alpha(t)
         alpha_t_dot = self.alpha.dot(t)
         beta_t = self.beta(t)
         beta_t_dot = self.beta.dot(t)
-        return (
-            alpha_t_dot - beta_t_dot / beta_t * alpha_t
-        ) * z + beta_t_dot / beta_t * x
+        return torch.einsum(
+            "ij,ikl->ikl", ((alpha_t_dot - beta_t_dot / beta_t * alpha_t), z)
+        ) + torch.einsum("ij,ikl->ikl", (beta_t_dot / beta_t, x))
 
     def conditional_score_fun(self, x, z, t):
         alpha_t = self.alpha(t)
         beta_t = self.beta(t)
-        return (alpha_t * z - x) / (beta_t**2)
+        return torch.einsum(
+            "ij,ikl->ikl",
+            (1 / (beta_t**2), (torch.einsum("ij,ikl->ikl", ((alpha_t, z))) - x)),
+        )
 
     def vec_field_from_score(self, score_x_t, t, x, sigma):
-        return (
+        a = (
             self.beta(t) ** 2 * self.alpha.dot(t) / (self.alpha(t) + 1e-3)
             - self.beta(t) * self.beta.dot(t)
             + sigma**2 / 2
-        ) * score_x_t + self.alpha.dot(t) / (self.alpha(t) + 1e-3) * x
+        )
+        return torch.einsum(
+            "ij,ikl->ikl",
+            (
+                (
+                    self.beta(t) ** 2 * self.alpha.dot(t) / (self.alpha(t) + 1e-3)
+                    - self.beta(t) * self.beta.dot(t)
+                    + sigma**2 / 2
+                ),
+                score_x_t,
+            ),
+        ) + torch.einsum("ij,ikl->ikl", (self.alpha.dot(t) / (self.alpha(t) + 1e-3), x))
+
+    def score_from_vec_field(self, score_x_t, t, x, sigma):
+        pass
