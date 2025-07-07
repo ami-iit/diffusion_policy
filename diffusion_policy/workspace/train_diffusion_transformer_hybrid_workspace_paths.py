@@ -30,7 +30,7 @@ from diffusion_policy.common.json_logger import JsonLogger
 from diffusion_policy.common.pytorch_util import dict_apply, optimizer_to
 from diffusion_policy.model.diffusion.ema_model import EMAModel
 from diffusion_policy.model.common.lr_scheduler import get_scheduler
-from diffusion_models_for_manipulations.paths.gaussian_paths import (
+from diffusion_models_for_manipulation.paths.gaussian_paths import (
     GaussianConditionalProbPath,
     LinearWithDerivative,
     SqrtWithDerivative,
@@ -66,15 +66,6 @@ class TrainDiffusionTransformerHybridWorkspacePaths(BaseWorkspace):
         # configure training state
         self.global_step = 0
         self.epoch = 0
-
-        alpha = LinearWithDerivative()
-        beta = SqrtWithDerivative()
-
-        path = GaussianConditionalProbPath(
-            cfg.policy.shape_meta["action"]["shape"], data, alpha, beta
-        )
-
-        self.trainer = TrainerVectorField(self.model, prob_path)
 
     def run(self):
         cfg = copy.deepcopy(self.cfg)
@@ -183,7 +174,7 @@ class TrainDiffusionTransformerHybridWorkspacePaths(BaseWorkspace):
                             train_sampling_batch = batch
 
                         # compute loss
-                        raw_loss = self.trainer.compute_loss(batch)
+                        raw_loss = self.model.compute_loss(batch)
                         loss = raw_loss / cfg.training.gradient_accumulate_every
                         loss.backward()
 

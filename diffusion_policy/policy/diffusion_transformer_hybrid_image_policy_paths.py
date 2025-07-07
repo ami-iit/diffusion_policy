@@ -7,8 +7,8 @@ from einops import rearrange, reduce
 
 from diffusion_policy.model.common.normalizer import LinearNormalizer
 from diffusion_policy.policy.base_image_policy import BaseImagePolicy
-from diffusion_policy.model.diffusion.transformer_for_diffusion import (
-    TransformerForDiffusion,
+from diffusion_policy.model.diffusion.transformer_for_diffusion_paths import (
+    TransformerForDiffusionPaths,
 )
 from diffusion_policy.model.diffusion.mask_generator import LowdimMaskGenerator
 from diffusion_policy.common.robomimic_config_util import get_robomimic_config
@@ -18,18 +18,21 @@ import robomimic.utils.obs_utils as ObsUtils
 import robomimic.models.base_nets as rmbn
 import diffusion_policy.model.vision.crop_randomizer as dmvc
 from diffusion_policy.common.pytorch_util import dict_apply, replace_submodules
-from diffusion_models_for_manipulations.paths.gaussian_paths import (
+from diffusion_models_for_manipulation.paths.gaussian_paths import (
     GaussianConditionalProbPath,
     LinearWithDerivative,
     SqrtWithDerivative,
 )
-from diffusion_models_for_manipulations.diff_eq.differential_equations import (
+from diffusion_models_for_manipulation.diff_eq.differential_equations import (
     LearnedScoreSDE,
+    LearnedVectorFieldSDE,
+    FullyLearnedSDE,
 )
-from diffusion_models_for_manipulations.diff_eq.num_methods_for_DE import euler_maruyama
+from diffusion_models_for_manipulation.diff_eq.num_methods_for_DE import euler_maruyama
 
 
 class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
+
     def __init__(
         self,
         shape_meta: dict,
@@ -37,7 +40,7 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
         horizon,
         n_action_steps,
         n_obs_steps,
-        path="gaussian",
+        prob_path="gaussian",
         num_inference_steps=None,
         # image
         crop_shape=(76, 76),
@@ -54,6 +57,7 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
         time_as_cond=True,
         obs_as_cond=True,
         pred_action_steps_only=False,
+        pred_type=None,
         # parameters passed to step
         **kwargs,
     ):
@@ -139,17 +143,19 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
             )
 
         # create diffusion model
-        alpha = LinearWithDerivative()
-        beta = SqrtWithDerivative()
-
-        path = GaussianConditionalProbPath(action_dim, alpha, beta)
+        if prob_path == "gaussian":
+            alpha = LinearWithDerivative()
+            beta = SqrtWithDerivative()
+            prob_path = GaussianConditionalProbPath((horizon, action_dim), alpha, beta)
+        else:
+            raise ValueError(f"Unsupported conditional probability path {prob_path}")
 
         obs_feature_dim = obs_encoder.output_shape()[0]
         input_dim = action_dim if obs_as_cond else (obs_feature_dim + action_dim)
         output_dim = input_dim
         cond_dim = obs_feature_dim if obs_as_cond else 0
 
-        model = TransformerForDiffusion(
+        model = TransformerForDiffusionPaths(
             input_dim=input_dim,
             output_dim=output_dim,
             horizon=horizon,
@@ -168,7 +174,7 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
 
         self.obs_encoder = obs_encoder
         self.model = model
-        self.noise_scheduler = noise_scheduler
+        self.pred_type = pred_type
         self.mask_generator = LowdimMaskGenerator(
             action_dim=action_dim,
             obs_dim=0 if (obs_as_cond) else obs_feature_dim,
@@ -186,10 +192,8 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
         self.pred_action_steps_only = pred_action_steps_only
         self.kwargs = kwargs
 
-        if num_inference_steps is None:
-            num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
-        self.path = path
+        self.prob_path = prob_path
 
     # ========= inference  ============
     def conditional_sample(
@@ -202,11 +206,20 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
         **kwargs,
     ):
         model = self.model
-        x = self.path.sample_p_simple(1).to(device)
-        # TODO: COMPLETAMENTE MANCANTE LA GUIDANCE
-        sde = LearnedScoreSDE(score=model, sigma=2.0, path=self.path)
-        x = euler_maruyama(x, sde, self.num_inference_steps)
 
+        x = self.prob_path.sample_p_simple(condition_data.shape[0]).to(
+            condition_data.device
+        )
+        # TODO: MODIFICARE LOSS CFG
+
+        pred_type = self.pred_type
+        if pred_type == "vector_field":
+            sde = LearnedVectorFieldSDE(vec_field=model, sigma=2.0, path=self.prob_path)
+        elif pred_type == "score_fun":
+            sde = LearnedScoreSDE(score=model, sigma=2.0, path=self.prob_path)
+        elif pred_type == "complete":
+            sde = FullyLearnedSDE(concat=model, sigma=2.0, path=self.prob_path)
+        x = euler_maruyama(x, sde, self.num_inference_steps, cond)
         return x
 
     def predict_action(
@@ -342,29 +355,31 @@ class DiffusionTransformerHybridImagePolicyPaths(BaseImagePolicy):
             condition_mask = self.mask_generator(z.shape)
 
         # Sample noise that we'll add to the images
-        noise = torch.randn(z.shape, device=z.device)
         batch_size = z.shape[0]
         # Sample a random timestep for each z
         timesteps = torch.rand(batch_size, 1).to(z)
-        x = self.path.sample_conditional(t=t, z=z)
+        x = self.prob_path.sample_conditional(t=timesteps, z=z)
         # compute loss mask
         loss_mask = ~condition_mask
 
         # apply conditioning
-        noisy_z[condition_mask] = z[condition_mask]
+        x[condition_mask] = z[condition_mask]
 
         # Predict the noise residual
         pred = self.model(x, timesteps, cond)
 
-        pred_type = self.noise_scheduler.config.prediction_type
+        pred_type = self.pred_type
         if pred_type == "vector_field":
-            target = self.path.conditional_vector_field(x=x, z=z, t=t)
+            target = self.prob_path.conditional_vector_field(x=x, z=z, t=timesteps)
         elif pred_type == "score_fun":
-            target = scoret_target = self.path.conditional_score_fun(x=x, z=z, t=t)
+            target = scoret_target = self.prob_path.conditional_score_fun(
+                x=x, z=z, t=timesteps
+            )
         elif pred_type == "complete":
-            ut_target = self.path.conditional_vector_field(x=x, z=z, t=t)
-            scoret_target = self.path.conditional_score_fun(x=x, z=z, t=t)
+            ut_target = self.prob_path.conditional_vector_field(x=x, z=z, t=timesteps)
+            scoret_target = self.prob_path.conditional_score_fun(x=x, z=z, t=timesteps)
             target = torch.concat(ut_target, scoret_target)
+
         else:
             raise ValueError(f"Unsupported prediction type {pred_type}")
 
