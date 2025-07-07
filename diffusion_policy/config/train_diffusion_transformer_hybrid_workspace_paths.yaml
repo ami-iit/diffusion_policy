@@ -2,8 +2,8 @@ defaults:
   - _self_
   - task: lift_image_abs
 
-name: train_diffusion_transformer_hybrid
-_target_: diffusion_policy.workspace.train_diffusion_transformer_hybrid_workspace.TrainDiffusionTransformerHybridWorkspace
+name: train_diffusion_transformer_hybrid_paths
+_target_: diffusion_policy.workspace.train_diffusion_transformer_hybrid_workspace_paths.TrainDiffusionTransformerHybridWorkspace
 
 task_name: ${task.name}
 shape_meta: ${task.shape_meta}
@@ -19,31 +19,22 @@ keypoint_visible_rate: 1.0
 obs_as_cond: True
 
 policy:
-  _target_: diffusion_policy.policy.diffusion_transformer_hybrid_image_policy.DiffusionTransformerHybridImagePolicy
+  _target_: diffusion_policy.policy.diffusion_transformer_hybrid_image_policy_paths.DiffusionTransformerHybridImagePolicyPaths
 
   shape_meta: ${shape_meta}
 
-  noise_scheduler:
-    _target_: diffusers.schedulers.scheduling_ddpm.DDPMScheduler
-    num_train_timesteps: 100
-    beta_start: 0.0001
-    beta_end: 0.02
-    beta_schedule: squaredcos_cap_v2
-    variance_type: fixed_small # Yilun's paper uses fixed_small_log instead, but easy to cause Nan
-    clip_sample: True # required when predict_epsilon=False
-    prediction_type: vector_field # or score_fun or complete
+  pred_type: score_fun # or vector_field or complete
 
   horizon: ${horizon}
   n_action_steps: ${eval:'${n_action_steps}+${n_latency_steps}'}
   n_obs_steps: ${n_obs_steps}
-  num_inference_steps: 100
 
   crop_shape: [76, 76]
   obs_encoder_group_norm: True
   eval_fixed_crop: True
 
   n_layer: 8
-  n_cond_layers: 0  # >0: use transformer encoder for cond, otherwise use MLP
+  n_cond_layers: 6  # >0: use transformer encoder for cond, otherwise use MLP
   n_head: 4
   n_emb: 256
   p_drop_emb: 0.0
@@ -52,7 +43,7 @@ policy:
   time_as_cond: True # if false, use BERT like encoder only arch, time as input
   obs_as_cond: ${obs_as_cond}
 
-  path: "gaussian"
+  prob_path: "gaussian"
 
   # scheduler.step params
   # predict_epsilon: True
@@ -91,7 +82,7 @@ training:
   debug: False
   resume: True
   # optimization
-  lr_scheduler: cosine
+  lr_scheduler: constant_with_warmup
   # Transformer needs LR warmup
   lr_warmup_steps: 1000
   num_epochs: 3050
