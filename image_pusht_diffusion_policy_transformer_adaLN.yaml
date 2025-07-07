@@ -79,6 +79,7 @@ policy:
   obs_encoder_group_norm: true
   p_drop_attn: 0.3
   p_drop_emb: 0.0
+  pred_action_steps_only: True
   shape_meta:
     action:
       shape:
@@ -95,6 +96,7 @@ policy:
         - 96
         type: rgb
   time_as_cond: true
+pred_action_steps_only: True
 shape_meta:
   action:
     shape:

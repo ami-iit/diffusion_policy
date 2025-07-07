@@ -263,7 +263,13 @@ class TrainDiffusionTransformerHybridWorkspaceAdaLN(BaseWorkspace):
                         gt_action = batch["action"]
 
                         result = policy.predict_action(obs_dict)
-                        pred_action = result["action_pred"]
+                        if cfg.pred_action_steps_only:
+                            pred_action = result["action"]
+                            start = cfg.n_obs_steps - 1
+                            end = start + cfg.n_action_steps
+                            gt_action = gt_action[:, start:end]
+                        else:
+                            pred_action = result["action_pred"]
                         mse = torch.nn.functional.mse_loss(pred_action, gt_action)
                         step_log["train_action_mse_error"] = mse.item()
                         del batch
